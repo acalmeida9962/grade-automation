@@ -267,6 +267,31 @@ That's a browser-level freeze, not the website. Two fixes, in order:
    - Check whether the grading site works in your **normal** Chrome on the same
      PC, and note which **antivirus** you have — both facts help the diagnosis.
 
+**The site loads generally, but the LOGIN page misbehaves (captcha never
+appears, login click hangs) even though everything works in my normal browser.**
+Use **attach mode** — instead of the tool launching a browser, it connects to one
+you start yourself, which behaves exactly like normal browsing:
+1. Start Edge with a debugging port (paste in PowerShell):
+   ```powershell
+   Start-Process msedge -ArgumentList "--remote-debugging-port=9222","--user-data-dir=$env:LOCALAPPDATA\edge-grades"
+   ```
+   (This opens a separate Edge window with its own profile; your normal Edge is
+   untouched. `chrome` instead of `msedge` also works if Chrome starts normally
+   on your machine.)
+2. In that window, log in to the platform and open the grade sheet.
+3. Then run the tool attached to it:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\run.ps1 --attach
+   ```
+   Continue as usual (`excel`, dry-run, fill). When you quit, your browser stays
+   open.
+
+To capture evidence of a hang for someone helping you remotely: at the `grade>`
+prompt run **`record`**, reproduce the problem by hand in the browser, press
+ENTER to stop — it saves `artifacts\record_report.txt` + `record.png` showing
+every network request, failure, console error, and whether the reCAPTCHA iframe
+ever appeared.
+
 **After I log in, the next page loads very slowly or never finishes.**
 Install **Google Chrome** and run the tool again — it will automatically use Chrome
 (you'll see `[browser] using installed Google Chrome.` in the PowerShell window),

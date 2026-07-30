@@ -651,6 +651,95 @@ def do_diag(page) -> None:
     report("Send diag_report.txt and the diag_*.png screenshots for analysis.")
 
 
+def do_record(page) -> None:
+    """Flight recorder: passively log network/console/frame activity while the
+    USER reproduces the problem in the browser, then dump everything.
+
+    Unlike `diag` (which loads generic test pages), this captures the actual
+    failing flow — e.g. the login page whose reCAPTCHA widget never renders."""
+    import time as _time
+
+    ARTIFACTS.mkdir(exist_ok=True)
+    ctx = page.context
+    events: list[str] = []
+    t0 = _time.time()
+    MAX_EVENTS = 3000
+
+    def ts() -> str:
+        return f"{_time.time() - t0:7.1f}s"
+
+    def add(line: str) -> None:
+        if len(events) < MAX_EVENTS:
+            events.append(line)
+
+    def on_req(req) -> None:
+        # Documents, scripts, xhr and iframes tell the story; skip image noise.
+        if req.resource_type in ("document", "script", "xhr", "fetch", "websocket"):
+            add(f"{ts()} ->  {req.resource_type:9} {req.method:4} {req.url[:150]}")
+
+    def on_resp(resp) -> None:
+        if resp.status >= 400:
+            add(f"{ts()} <-  HTTP {resp.status}  {resp.url[:150]}")
+
+    def on_fail(req) -> None:
+        add(f"{ts()} XX  {req.failure or 'failed'}  {req.url[:150]}")
+
+    def hook_page(pg) -> None:
+        pg.on("console", lambda m: add(f"{ts()} console-{m.type}: {m.text[:180]}")
+              if m.type in ("error", "warning") else None)
+        pg.on("pageerror", lambda e: add(f"{ts()} pageerror: {str(e)[:180]}"))
+        pg.on("frameattached", lambda fr: add(f"{ts()} frame+  {fr.url[:150]}"))
+        pg.on("framenavigated", lambda fr: add(f"{ts()} frame~  {fr.url[:150]}"))
+
+    ctx.on("request", on_req)
+    ctx.on("response", on_resp)
+    ctx.on("requestfailed", on_fail)
+    ctx.on("page", hook_page)
+    for pg in ctx.pages:
+        hook_page(pg)
+
+    print("\n=== RECORDING ===")
+    print("  Now go to the browser and reproduce the problem exactly as it")
+    print("  happens (e.g. open the login page, wait for the captcha that never")
+    print("  appears, click things that hang...). Take your time.")
+    input("  When done, come back here and press ENTER to stop recording... ")
+
+    ctx.remove_listener("request", on_req)
+    ctx.remove_listener("response", on_resp)
+    ctx.remove_listener("requestfailed", on_fail)
+    ctx.remove_listener("page", hook_page)
+
+    lines: list[str] = ["=== RECORDING REPORT ===", f"duration: {_time.time()-t0:.0f}s",
+                        f"events captured: {len(events)}", ""]
+    lines += events
+
+    # Final page state: URL, frames (is the reCAPTCHA iframe even there?), JS.
+    lines += ["", "=== FINAL PAGE STATE ==="]
+    try:
+        lines.append(f"url: {page.url}")
+        lines.append(f"title: {page.title()[:80]!r}")
+        for fr in page.frames:
+            lines.append(f"frame: {fr.url[:150]}")
+        has_recaptcha_frame = any("recaptcha" in fr.url.lower() for fr in page.frames)
+        lines.append(f"reCAPTCHA iframe present: {has_recaptcha_frame}")
+        lines.append(f"typeof grecaptcha: {page.evaluate('typeof grecaptcha')}")
+        lines.append(f"document.readyState: {page.evaluate('document.readyState')}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"<final-state error: {type(exc).__name__}: {exc}>")
+    try:
+        page.screenshot(path=str(ARTIFACTS / "record.png"))
+        lines.append("screenshot: record.png")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"screenshot failed: {type(exc).__name__}")
+
+    (ARTIFACTS / "record_report.txt").write_text("\n".join(lines), encoding="utf-8")
+    print(f"\nSaved {len(events)} events to {ARTIFACTS / 'record_report.txt'}")
+    print("Last 25 events:")
+    for line in events[-25:]:
+        print("  " + line)
+    print("\nSend record_report.txt and record.png for analysis.")
+
+
 SESSION_HELP = """
 Commands (run against the already-open page — no reboot):
   excel    read grades from an Excel sheet and fill the page (Milestone 1)
@@ -659,6 +748,7 @@ Commands (run against the already-open page — no reboot):
   probe    click one target-column cell and dump the picker markup
   inspect  dump full DOM + screenshot to ./artifacts/
   diag     run connectivity diagnostics; saves a shareable report to ./artifacts/
+  record   record network/console activity WHILE you reproduce a problem by hand
   help     show this help
   quit     close the browser and exit
 """
@@ -675,6 +765,7 @@ def run_session(page) -> None:
         "probe": lambda: do_probe(page),
         "inspect": lambda: do_inspect(page),
         "diag": lambda: do_diag(page),
+        "record": lambda: do_record(page),
     }
     while True:
         try:
@@ -788,6 +879,16 @@ def main() -> int:
              "loads (a GPU/renderer deadlock on some Windows setups).",
     )
     parser.add_argument(
+        "--attach",
+        nargs="?",
+        const="9222",
+        metavar="PORT",
+        help="Do not launch a browser; attach to one YOU started with "
+             "--remote-debugging-port=PORT (default 9222). The browser behaves "
+             "exactly like normal browsing, which sidesteps launch-mode problems. "
+             "See the README for the exact command to start Edge/Chrome this way.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="fill mode only: open each picker and confirm the value, but do NOT select it.",
@@ -803,8 +904,27 @@ def main() -> int:
     EXCELS_DIR.mkdir(exist_ok=True)
 
     with sync_playwright() as p:
-        context = launch_context(p, args.browser, no_gpu=args.no_gpu)
-        page = context.pages[0] if context.pages else context.new_page()
+        if args.attach:
+            endpoint = f"http://127.0.0.1:{args.attach}"
+            try:
+                browser = p.chromium.connect_over_cdp(endpoint)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Could not attach to a browser on port {args.attach} "
+                      f"({type(exc).__name__}).")
+                print("Start Edge with a debugging port first (PowerShell):\n")
+                print('  Start-Process msedge -ArgumentList '
+                      '"--remote-debugging-port=9222",'
+                      '"--user-data-dir=$env:LOCALAPPDATA\\edge-grades"\n')
+                print("(or the same with 'chrome' instead of 'msedge'), "
+                      "then run this again with --attach.")
+                return 1
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            context = None  # we did not launch it; never close the user's browser
+            print(f"[browser] attached to your running browser on port {args.attach}.")
+        else:
+            context = launch_context(p, args.browser, no_gpu=args.no_gpu)
+            page = context.pages[0] if context.pages else context.new_page()
         try:
             page.bring_to_front()  # ensure the window is foregrounded/active
         except Exception:  # noqa: BLE001
@@ -826,7 +946,10 @@ def main() -> int:
                     do_fill(page, dry_run=args.dry_run)
                 input("\nDone. Press ENTER to close the browser... ")
         finally:
-            context.close()
+            if context is not None:
+                context.close()
+            else:
+                print("Detached; your browser stays open.")
 
     return 0
 
