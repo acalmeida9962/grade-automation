@@ -1,0 +1,20 @@
+# Python virtual environment (rebuilt per machine via setup)
+.venv/
+__pycache__/
+*.pyc
+
+# Browser profile / login session (machine-specific, may contain cookies)
+user-data/
+
+# Inspection dumps
+artifacts/
+
+# The teacher's Excel files (real student data) live here — never commit them.
+excels/
+*.xlsx
+*.xlsm
+*.xls
+
+# OS cruft
+.DS_Store
+Thumbs.db
