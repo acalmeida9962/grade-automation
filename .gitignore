@@ -3,8 +3,10 @@
 __pycache__/
 *.pyc
 
-# Browser profile / login session (machine-specific, may contain cookies)
+# Browser profiles / login sessions (machine-specific, may contain cookies)
 user-data/
+user-data-chrome/
+user-data-chromium/
 
 # Inspection dumps
 artifacts/

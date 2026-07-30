@@ -14,4 +14,5 @@ if (-not (Test-Path $venvPy)) {
     exit 1
 }
 
-& $venvPy poc.py
+# Pass any extra arguments through (e.g.:  .\run.ps1 --no-gpu )
+& $venvPy poc.py @args

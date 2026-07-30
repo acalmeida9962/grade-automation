@@ -40,7 +40,10 @@ def _force_utf8_console() -> None:
             pass
 
 HERE = pathlib.Path(__file__).resolve().parent
-USER_DATA_DIR = HERE / "user-data"
+# Separate login profiles per browser: a profile created by bundled Chromium must
+# never be reopened by Google Chrome (different build) — that can hang/corrupt it.
+USER_DATA_CHROME = HERE / "user-data-chrome"
+USER_DATA_CHROMIUM = HERE / "user-data-chromium"
 ARTIFACTS = HERE / "artifacts"
 EXCELS_DIR = HERE / "excels"
 
@@ -582,7 +585,7 @@ def run_session(page) -> None:
             print(f"[error] {type(exc).__name__}: {exc}")
 
 
-def launch_context(p, browser: str):
+def launch_context(p, browser: str, no_gpu: bool = False):
     """Open the browser we drive.
 
     Prefers the real installed Google Chrome (channel="chrome"): it renders the
@@ -591,15 +594,12 @@ def launch_context(p, browser: str):
     make the page load slowly or stall after login. Falls back to bundled Chromium
     if Chrome isn't installed.
 
-    We also drop the automation flags (--enable-automation / navigator.webdriver)
-    that some sites react to by throttling or hanging.
+    Each browser gets its own login-profile folder (a Chromium profile reopened by
+    Chrome can hang the whole browser). `no_gpu=True` adds --disable-gpu, the
+    classic fix for a headed Chrome that hangs with nothing rendering.
     """
-    opts = dict(
-        user_data_dir=str(USER_DATA_DIR),
-        headless=False,
-        viewport=None,  # use the real window size
-        ignore_default_args=["--enable-automation"],
-        args=[
+    def build_opts(user_data_dir: pathlib.Path) -> dict:
+        args = [
             "--disable-blink-features=AutomationControlled",
             "--start-maximized",
             # Stop Chrome from throttling/pausing the page when it thinks the
@@ -620,20 +620,33 @@ def launch_context(p, browser: str):
             "--hide-crash-restore-bubble",
             # Don't touch the OS keyring/credential store (can prompt or hang).
             "--password-store=basic",
-        ],
-    )
+        ]
+        if no_gpu:
+            args += ["--disable-gpu", "--disable-software-rasterizer"]
+        user_data_dir.mkdir(exist_ok=True)
+        return dict(
+            user_data_dir=str(user_data_dir),
+            headless=False,
+            viewport=None,  # use the real window size
+            ignore_default_args=["--enable-automation"],
+            args=args,
+        )
+
     if browser in ("auto", "chrome"):
         try:
-            ctx = p.chromium.launch_persistent_context(channel="chrome", **opts)
-            print("[browser] using installed Google Chrome.")
+            ctx = p.chromium.launch_persistent_context(
+                channel="chrome", **build_opts(USER_DATA_CHROME)
+            )
+            print("[browser] using installed Google Chrome"
+                  + (" (GPU disabled)." if no_gpu else "."))
             return ctx
         except Exception as exc:  # noqa: BLE001 — Chrome not installed / not found
             if browser == "chrome":
                 raise
             print(f"[browser] Google Chrome not available ({type(exc).__name__}); "
                   "falling back to bundled Chromium.")
-    ctx = p.chromium.launch_persistent_context(**opts)
-    print("[browser] using bundled Chromium.")
+    ctx = p.chromium.launch_persistent_context(**build_opts(USER_DATA_CHROMIUM))
+    print("[browser] using bundled Chromium" + (" (GPU disabled)." if no_gpu else "."))
     return ctx
 
 
@@ -653,6 +666,12 @@ def main() -> int:
              "Chromium), 'chrome' (force real Chrome), or 'chromium' (force bundled).",
     )
     parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Add --disable-gpu. Try this if the browser opens but hangs and nothing "
+             "loads (a GPU/renderer deadlock on some Windows setups).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="fill mode only: open each picker and confirm the value, but do NOT select it.",
@@ -665,11 +684,10 @@ def main() -> int:
     args = parser.parse_args()
 
     _force_utf8_console()
-    USER_DATA_DIR.mkdir(exist_ok=True)
     EXCELS_DIR.mkdir(exist_ok=True)
 
     with sync_playwright() as p:
-        context = launch_context(p, args.browser)
+        context = launch_context(p, args.browser, no_gpu=args.no_gpu)
         page = context.pages[0] if context.pages else context.new_page()
         try:
             page.bring_to_front()  # ensure the window is foregrounded/active

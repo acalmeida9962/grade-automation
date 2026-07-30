@@ -243,6 +243,17 @@ Do Step 0. After installing, **open a new PowerShell window** before trying agai
 Re-run `setup.ps1` — it resumes and is safe to run again. Check your internet and
 any VPN/firewall.
 
+**The browser opens but EVERYTHING hangs — even chrome://settings or history
+won't load.**
+That's a browser-level freeze, not the website. Two fixes, in order:
+1. Update to the latest code (`git pull`) — newer versions use a separate, fresh
+   profile per browser, which fixes a hang caused by reusing the old Chromium
+   profile in Chrome. You'll need to log in to the platform once more.
+2. If it still hangs, run with the GPU disabled:
+   `powershell -ExecutionPolicy Bypass -File .\run.ps1 --no-gpu`
+   (a GPU/driver deadlock on some Windows machines; this bypasses it). If that
+   fixes it, just always run it with `--no-gpu`.
+
 **After I log in, the next page loads very slowly or never finishes.**
 Install **Google Chrome** and run the tool again — it will automatically use Chrome
 (you'll see `[browser] using installed Google Chrome.` in the PowerShell window),
