@@ -44,6 +44,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 # never be reopened by Google Chrome (different build) — that can hang/corrupt it.
 USER_DATA_CHROME = HERE / "user-data-chrome"
 USER_DATA_CHROMIUM = HERE / "user-data-chromium"
+USER_DATA_EDGE = HERE / "user-data-edge"
 ARTIFACTS = HERE / "artifacts"
 EXCELS_DIR = HERE / "excels"
 
@@ -542,6 +543,114 @@ def do_excel(page) -> None:
         print("\nDone. No 'Guardar' was clicked — review the values, then save manually.")
 
 
+DIAG_TARGETS = [
+    ("basic web", "https://example.com"),
+    ("google / TLS", "https://www.google.com"),
+    ("reCAPTCHA script", "https://www.google.com/recaptcha/api.js"),
+    ("grading platform", "https://accesos.colombiaevaluadora.co/"),
+]
+
+
+def do_diag(page) -> None:
+    """Connectivity/rendering diagnostics.
+
+    Navigates the current tab through reference pages and records timings,
+    network failures (net::ERR_* codes) and console errors. The resulting
+    artifacts/diag_report.txt + diag_*.png screenshots pinpoint WHERE loading
+    breaks: cert errors -> antivirus TLS interception; connection reset ->
+    firewall/AV blocking; name-not-resolved -> DNS/proxy; nothing at all (even
+    example.com) -> the automated browser itself is broken on this machine.
+    """
+    import platform as _platform
+    import time as _time
+
+    ARTIFACTS.mkdir(exist_ok=True)
+    lines: list[str] = []
+
+    def report(msg: str = "") -> None:
+        lines.append(msg)
+        print(msg)
+
+    try:
+        from importlib.metadata import version as _pkg_version
+        pw_ver = _pkg_version("playwright")
+    except Exception:  # noqa: BLE001
+        pw_ver = "unknown"
+
+    report("=== DIAGNOSTICS ===")
+    report(f"os: {_platform.platform()}")
+    report(f"python: {sys.version.split()[0]}   playwright: {pw_ver}")
+    try:
+        b = page.context.browser
+        report(f"browser version: {b.version if b else 'unknown (persistent context)'}")
+    except Exception as exc:  # noqa: BLE001
+        report(f"browser version: <error: {exc}>")
+    try:
+        report(f"userAgent: {page.evaluate('navigator.userAgent')}")
+        report(f"navigator.webdriver: {page.evaluate('navigator.webdriver')}")
+    except Exception as exc:  # noqa: BLE001
+        report(f"JS eval FAILED on current tab: {type(exc).__name__}: {exc}")
+        report("  ^ if this fails, the tab/renderer itself is dead — nothing "
+               "network-related will work either.")
+
+    failures: list[str] = []
+    console_errors: list[str] = []
+
+    def on_reqfail(req) -> None:
+        failures.append(f"{req.failure or '?'}  {req.url[:120]}")
+
+    def on_console(msg) -> None:
+        if msg.type == "error":
+            console_errors.append(msg.text[:200])
+
+    page.on("requestfailed", on_reqfail)
+    page.on("console", on_console)
+    report("\nThis navigates the current tab through a few test pages (~1-2 min).")
+
+    for i, (label, url) in enumerate(DIAG_TARGETS, 1):
+        failures.clear()
+        console_errors.clear()
+        report(f"\n--- [{i}] {label}: {url}")
+        t0 = _time.time()
+        try:
+            resp = page.goto(url, timeout=20000, wait_until="load")
+            dt = _time.time() - t0
+            status = resp.status if resp else "?"
+            report(f"    loaded in {dt:.1f}s  status={status}  title={page.title()[:60]!r}")
+        except Exception as exc:  # noqa: BLE001
+            dt = _time.time() - t0
+            first = str(exc).splitlines()[0][:160]
+            report(f"    FAILED after {dt:.1f}s: {type(exc).__name__}: {first}")
+        page.wait_for_timeout(2500)  # let stragglers fail and get recorded
+        for f in failures[:8]:
+            report(f"    net-fail: {f}")
+        if len(failures) > 8:
+            report(f"    ... and {len(failures) - 8} more request failures")
+        for c in console_errors[:5]:
+            report(f"    console-error: {c}")
+        try:
+            page.screenshot(path=str(ARTIFACTS / f"diag_{i}.png"))
+        except Exception as exc:  # noqa: BLE001
+            report(f"    screenshot failed: {type(exc).__name__}")
+
+    page.remove_listener("requestfailed", on_reqfail)
+    page.remove_listener("console", on_console)
+
+    # Is this Chrome managed by an organization (school/enterprise policies)?
+    try:
+        page.goto("chrome://policy", timeout=10000)
+        page.wait_for_timeout(1500)
+        page.screenshot(path=str(ARTIFACTS / "diag_policy.png"))
+        report("\nSaved chrome://policy screenshot (diag_policy.png) — shows "
+               "whether this browser is managed by an organization.")
+    except Exception as exc:  # noqa: BLE001
+        report(f"\nchrome://policy not capturable: {type(exc).__name__}")
+
+    (ARTIFACTS / "diag_report.txt").write_text("\n".join(lines), encoding="utf-8")
+    report(f"\nReport saved to: {ARTIFACTS / 'diag_report.txt'}")
+    report("Send diag_report.txt and the diag_*.png screenshots for analysis.")
+
+
 SESSION_HELP = """
 Commands (run against the already-open page — no reboot):
   excel    read grades from an Excel sheet and fill the page (Milestone 1)
@@ -549,6 +658,7 @@ Commands (run against the already-open page — no reboot):
   fill     Milestone-0 test fill LIVE: set the hardcoded test grades
   probe    click one target-column cell and dump the picker markup
   inspect  dump full DOM + screenshot to ./artifacts/
+  diag     run connectivity diagnostics; saves a shareable report to ./artifacts/
   help     show this help
   quit     close the browser and exit
 """
@@ -564,6 +674,7 @@ def run_session(page) -> None:
         "fill": lambda: do_fill(page, dry_run=False),
         "probe": lambda: do_probe(page),
         "inspect": lambda: do_inspect(page),
+        "diag": lambda: do_diag(page),
     }
     while True:
         try:
@@ -632,16 +743,20 @@ def launch_context(p, browser: str, no_gpu: bool = False):
             args=args,
         )
 
-    if browser in ("auto", "chrome"):
+    if browser in ("auto", "chrome", "edge"):
+        if browser == "edge":
+            channel, udir, name = "msedge", USER_DATA_EDGE, "Microsoft Edge"
+        else:
+            channel, udir, name = "chrome", USER_DATA_CHROME, "Google Chrome"
         try:
             ctx = p.chromium.launch_persistent_context(
-                channel="chrome", **build_opts(USER_DATA_CHROME)
+                channel=channel, **build_opts(udir)
             )
-            print("[browser] using installed Google Chrome"
+            print(f"[browser] using installed {name}"
                   + (" (GPU disabled)." if no_gpu else "."))
             return ctx
-        except Exception as exc:  # noqa: BLE001 — Chrome not installed / not found
-            if browser == "chrome":
+        except Exception as exc:  # noqa: BLE001 — browser not installed / not found
+            if browser in ("chrome", "edge"):
                 raise
             print(f"[browser] Google Chrome not available ({type(exc).__name__}); "
                   "falling back to bundled Chromium.")
@@ -660,10 +775,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--browser",
-        choices=["auto", "chrome", "chromium"],
+        choices=["auto", "chrome", "edge", "chromium"],
         default="auto",
         help="Which browser to drive: 'auto' (real Chrome if present, else bundled "
-             "Chromium), 'chrome' (force real Chrome), or 'chromium' (force bundled).",
+             "Chromium), 'chrome' (force real Chrome), 'edge' (installed Microsoft "
+             "Edge — every Windows PC has it), or 'chromium' (force bundled).",
     )
     parser.add_argument(
         "--no-gpu",

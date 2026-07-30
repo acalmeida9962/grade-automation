@@ -253,6 +253,19 @@ That's a browser-level freeze, not the website. Two fixes, in order:
    `powershell -ExecutionPolicy Bypass -File .\run.ps1 --no-gpu`
    (a GPU/driver deadlock on some Windows machines; this bypasses it). If that
    fixes it, just always run it with `--no-gpu`.
+3. Still hanging? Gather evidence instead of guessing:
+   - After `git pull`, **re-run setup** (`powershell -ExecutionPolicy Bypass -File
+     .\setup.ps1`) so the updated automation library installs — an outdated one
+     can misbehave with a current Chrome.
+   - Run the tool, press ENTER at the handoff (no need to log in), and type
+     **`diag`** at the `grade>` prompt. It loads a few reference pages and writes
+     `artifacts\diag_report.txt` + `diag_*.png` screenshots showing exactly where
+     loading breaks (DNS, firewall/antivirus, TLS interception, or the browser
+     itself). Send those files to whoever is helping you.
+   - Try Microsoft Edge instead of Chrome (every Windows PC has it):
+     `powershell -ExecutionPolicy Bypass -File .\run.ps1 --browser edge`
+   - Check whether the grading site works in your **normal** Chrome on the same
+     PC, and note which **antivirus** you have — both facts help the diagnosis.
 
 **After I log in, the next page loads very slowly or never finishes.**
 Install **Google Chrome** and run the tool again — it will automatically use Chrome

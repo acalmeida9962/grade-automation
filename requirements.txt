@@ -1,2 +1,4 @@
-playwright==1.48.0
+# Keep playwright current: it must speak the protocol of the user's up-to-date
+# Chrome/Edge. (Re-run setup after pulling if this changes.)
+playwright>=1.49,<2
 openpyxl==3.1.5

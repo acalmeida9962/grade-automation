@@ -7,6 +7,7 @@ __pycache__/
 user-data/
 user-data-chrome/
 user-data-chromium/
+user-data-edge/
 
 # Inspection dumps
 artifacts/
