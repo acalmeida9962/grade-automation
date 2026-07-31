@@ -12,6 +12,9 @@ user-data-edge/
 # Inspection dumps
 artifacts/
 
+# Per-machine preferences (last Excel/sheet used, etc.)
+settings.json
+
 # The teacher's Excel files (real student data) live here — never commit them.
 excels/
 *.xlsx

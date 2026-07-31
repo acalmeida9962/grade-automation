@@ -20,6 +20,7 @@ Nothing is ever saved automatically: the script never clicks "Guardar".
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import re
 import sys
@@ -47,6 +48,23 @@ USER_DATA_CHROMIUM = HERE / "user-data-chromium"
 USER_DATA_EDGE = HERE / "user-data-edge"
 ARTIFACTS = HERE / "artifacts"
 EXCELS_DIR = HERE / "excels"
+SETTINGS_FILE = HERE / "settings.json"  # per-machine prefs (gitignored)
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — missing/corrupt file: start fresh
+        return {}
+
+
+def _save_settings(**kw) -> None:
+    s = _load_settings()
+    s.update(kw)
+    try:
+        SETTINGS_FILE.write_text(json.dumps(s, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — never let prefs break the flow
+        pass
 
 # ---- Milestone 0 hardcoded test target (from the screenshots) ---------------
 # Column identified by its hover tooltip name.
@@ -68,11 +86,11 @@ def normalize(name: str) -> str:
 
 def wait_for_handoff() -> None:
     print("\n" + "=" * 70)
-    print("  Log in and open the grade sheet in the browser window.")
-    print("  When the student table with grades is visible, come back here")
-    print("  and press ENTER to continue.")
+    print("  Inicia sesión y abre la planilla de notas en el navegador.")
+    print("  Cuando la tabla de estudiantes con sus notas esté visible,")
+    print("  vuelve aquí y presiona ENTER para continuar.")
     print("=" * 70)
-    input("  Press ENTER when ready... ")
+    input("  Presiona ENTER cuando estés listo... ")
 
 
 def do_inspect(page) -> None:
@@ -312,7 +330,7 @@ def set_grade(page, pkm: str, pka: str, value_str: str, dry_run: bool) -> tuple[
         f"input.data[data-pkmatricula='{pkm}'][data-pkactividad='{pka}']"
     )
     if cell.count() == 0:
-        return ("MISS", "no cell for this student/column on the page")
+        return ("MISS", "no hay celda para este estudiante/columna en la página")
 
     before = cell.first.evaluate("e => e.value || e.getAttribute('placeholder') || ''")
     cell.first.scroll_into_view_if_needed()
@@ -321,7 +339,7 @@ def set_grade(page, pkm: str, pka: str, value_str: str, dry_run: bool) -> tuple[
     try:
         panel.wait_for(state="visible", timeout=5000)
     except Exception:  # noqa: BLE001
-        return ("FAIL", "picker did not open")
+        return ("FAIL", "no se abrió el selector de notas")
 
     option = panel.locator("td.item-td:not(.disabled) a").filter(
         has_text=re.compile(rf"^{re.escape(value_str)}$")
@@ -330,15 +348,16 @@ def set_grade(page, pkm: str, pka: str, value_str: str, dry_run: bool) -> tuple[
         any_match = panel.locator("a").filter(
             has_text=re.compile(rf"^{re.escape(value_str)}$")
         )
-        why = "disabled (below the column minimum)" if any_match.count() else "not in picker"
+        why = ("está deshabilitada (bajo el mínimo de la columna)"
+               if any_match.count() else "no está en el selector")
         dismiss_picker(page)
         _wait_hidden(panel)
-        return ("FAIL", f"value {value_str} {why}")
+        return ("FAIL", f"la nota {value_str} {why}")
 
     if dry_run:
         dismiss_picker(page)  # close via X (no-op on empty cells); never selects
         _wait_hidden(panel)
-        return ("OK", f"would set {value_str} (was {before!r})")
+        return ("OK", f"pondría {value_str} (antes: {before!r})")
 
     option.first.click()
     if not _wait_hidden(panel):
@@ -346,8 +365,8 @@ def set_grade(page, pkm: str, pka: str, value_str: str, dry_run: bool) -> tuple[
         _wait_hidden(panel)
     after = cell.first.evaluate("e => e.value || e.getAttribute('placeholder') || ''")
     if after.strip() == value_str:
-        return ("SET", f"{value_str} (was {before!r})")
-    return ("WARN", f"tried {value_str}, cell now {after!r} (was {before!r})")
+        return ("SET", f"{value_str} (antes: {before!r})")
+    return ("WARN", f"se intentó {value_str}, la celda quedó {after!r} (antes: {before!r})")
 
 
 def _wait_hidden(panel, timeout: int = 2500) -> bool:
@@ -359,28 +378,29 @@ def _wait_hidden(panel, timeout: int = 2500) -> bool:
 
 
 def do_fill(page, dry_run: bool) -> None:
-    """Milestone 0: fill the hardcoded test grades into TARGET_COLUMN."""
-    mode = "DRY-RUN (no grades will be set)" if dry_run else "LIVE (grades will be set; NOT saved)"
-    print(f"\n=== FILL — {mode} ===")
+    """Milestone 0 (avanzado): fill the hardcoded test grades into TARGET_COLUMN."""
+    mode = ("SIMULACRO (no se pondrá ninguna nota)" if dry_run
+            else "REAL (se pondrán notas; NO se guarda)")
+    print(f"\n=== PRUEBA — {mode} ===")
 
     target_pk = resolve_target_pk(page)
     if not target_pk:
-        print(f"ABORT: target column {TARGET_COLUMN!r} not found in this view.")
+        print(f"ABORTADO: la columna {TARGET_COLUMN!r} no está en esta vista.")
         return
-    print(f"Target column {TARGET_COLUMN!r} -> pkActividad={target_pk}")
+    print(f"Columna objetivo {TARGET_COLUMN!r} -> pkActividad={target_pk}")
 
     roster = build_roster(page)
-    print(f"Roster: {len(roster)} students found on the page.")
+    print(f"Estudiantes en la página: {len(roster)}.")
 
     for raw_name, grade in TARGET_GRADES.items():
         pkm = roster.get(normalize(raw_name))
         if not pkm:
-            print(f"  MISS  {raw_name!r}: not found on page")
+            print(f"  MISS  {raw_name!r}: no está en la página")
             continue
         tag, detail = set_grade(page, pkm, target_pk, f"{grade:.1f}", dry_run)
         print(f"  {tag:<4}  {raw_name!r}: {detail}")
 
-    print("\nDone. No 'Guardar' was clicked — review the values in the browser.")
+    print("\nListo. NO se hizo clic en 'Guardar' — revisa los valores en el navegador.")
 
 
 def _ask(prompt: str) -> str:
@@ -388,12 +408,22 @@ def _ask(prompt: str) -> str:
 
 
 def _choose_excel_file() -> pathlib.Path | None:
-    """Ask for the Excel file by absolute path or by filename in ./excels/."""
-    src = _ask("Read the Excel by [p]ath or [f]ilename? ").lower()
-    if src in ("p", "path"):
-        raw = _ask("Absolute path to the .xlsx file: ").strip().strip('"').strip("'")
+    """Ask for the Excel file: last used (ENTER), ./excels/ listing, or a path."""
+    last = _load_settings().get("last_excel")
+    last_path = pathlib.Path(last) if last else None
+    if last_path and last_path.is_file():
+        src = _ask(f"¿[ENTER] usar el último ({last_path.name}), "
+                   "[f] elegir de la carpeta 'excels', o [p] escribir una ruta? ").lower()
+        if src == "":
+            return last_path
+    else:
+        src = _ask("¿Buscar el Excel por [f] archivo de la carpeta 'excels' "
+                   "o [p] ruta completa? ").lower()
+
+    if src in ("p", "path", "r", "ruta"):
+        raw = _ask("Ruta completa al archivo .xlsx: ").strip().strip('"').strip("'")
         path = pathlib.Path(raw).expanduser()
-    elif src in ("f", "filename"):
+    elif src in ("f", "filename", "a", "archivo"):
         EXCELS_DIR.mkdir(exist_ok=True)
         excels = sorted(
             (p for p in EXCELS_DIR.iterdir()
@@ -402,26 +432,26 @@ def _choose_excel_file() -> pathlib.Path | None:
             key=lambda p: p.name.lower(),
         )
         if not excels:
-            print(f"\nNo Excel files found in: {EXCELS_DIR}")
-            print("Put your .xlsx file in that folder, then run 'excel' again.")
+            print(f"\nNo hay archivos de Excel en: {EXCELS_DIR}")
+            print("Pon tu archivo .xlsx en esa carpeta y vuelve a intentar.")
             return None
-        print(f"\nExcel files in {EXCELS_DIR}:")
+        print(f"\nArchivos de Excel en {EXCELS_DIR}:")
         for i, p in enumerate(excels, 1):
             print(f"  {i}. {p.name}")
-        pick = _ask("Choose a file (number or exact name): ")
+        pick = _ask("Elige un archivo (número o nombre exacto): ")
         if pick.isdigit() and 1 <= int(pick) <= len(excels):
             path = excels[int(pick) - 1]
         else:
             match = next((p for p in excels if p.name.lower() == pick.lower()), None)
             if match is None:
-                print(f"Invalid choice: {pick!r}")
+                print(f"Opción no válida: {pick!r}")
                 return None
             path = match
     else:
-        print("Cancelled (choose 'p' or 'f').")
+        print("Cancelado (elige 'f' o 'p').")
         return None
     if not path.is_file():
-        print(f"File not found: {path}")
+        print(f"Archivo no encontrado: {path}")
         return None
     return path
 
@@ -429,18 +459,24 @@ def _choose_excel_file() -> pathlib.Path | None:
 def _choose_sheet(path: pathlib.Path) -> str | None:
     sheets = excel_loader.list_sheets(str(path))
     if not sheets:
-        print("The workbook has no sheets.")
+        print("El archivo no tiene hojas.")
         return None
-    print("\nSheets in this workbook:")
+    last = _load_settings().get("last_sheet")
+    default = last if last in sheets else None
+    print("\nHojas del archivo:")
     for i, s in enumerate(sheets, 1):
-        print(f"  {i}. {s}")
-    pick = _ask("Choose a sheet (number or exact name): ")
+        mark = "   <- última usada" if s == default else ""
+        print(f"  {i}. {s}{mark}")
+    hint = f" [ENTER = {default}]" if default else ""
+    pick = _ask(f"Elige la hoja (número o nombre exacto){hint}: ")
+    if pick == "" and default:
+        return default
     if pick.isdigit() and 1 <= int(pick) <= len(sheets):
         return sheets[int(pick) - 1]
     match = next((s for s in sheets if s.lower() == pick.lower()), None)
     if match:
         return match
-    print(f"Invalid choice: {pick!r}")
+    print(f"Opción no válida: {pick!r}")
     return None
 
 
@@ -458,25 +494,28 @@ def do_excel(page) -> None:
     try:
         parsed = excel_loader.parse_sheet(str(path), sheet)
     except Exception as exc:  # noqa: BLE001
-        print(f"Could not parse sheet: {exc}")
+        print(f"No se pudo leer la hoja: {exc}")
         return
 
-    print(f"\nSheet {parsed.sheet!r}: {len(parsed.students)} students, "
-          f"name column {parsed.name_header!r}.")
-    print(f"Grade columns in the Excel ({len(parsed.grade_headers)}):")
+    # Recordar este archivo y hoja para la próxima vez.
+    _save_settings(last_excel=str(path), last_sheet=parsed.sheet)
+
+    print(f"\nHoja {parsed.sheet!r}: {len(parsed.students)} estudiantes, "
+          f"columna de nombres {parsed.name_header!r}.")
+    print(f"Columnas de notas en el Excel ({len(parsed.grade_headers)}):")
     for h in parsed.grade_headers:
         print(f"    - {h}")
 
-    # --- Ask the user to navigate to the grade page, then hand off. ---
+    # --- Pedir al usuario que navegue a la planilla, luego continuar. ---
     print("\n" + "-" * 70)
-    print("  Now navigate the browser to the grade sheet you want filled:")
-    print("  the correct class AND evaluation period, with the student table")
-    print("  and its grade columns visible.")
-    print("  Then come back here and press ENTER.")
+    print("  Ahora ve en el navegador a la planilla que quieres llenar:")
+    print("  la clase Y el período de evaluación correctos, con la tabla de")
+    print("  estudiantes y sus columnas de notas visibles.")
+    print("  Luego vuelve aquí y presiona ENTER.")
     print("-" * 70)
-    input("  Press ENTER when the page is ready... ")
+    input("  Presiona ENTER cuando la página esté lista... ")
 
-    # --- Match Excel columns/students to what's on the page. ---
+    # --- Emparejar columnas/estudiantes del Excel con lo que hay en la página. ---
     page_columns = resolve_columns(page)          # normalized name -> pkActividad
     roster = build_roster(page)                   # normalized name -> pkMatricula
 
@@ -486,23 +525,24 @@ def do_excel(page) -> None:
         pka = page_columns.get(normalize(h))
         (matched.append((h, pka)) if pka else unmatched_cols.append(h))
 
-    print(f"\nColumns matched to the page ({len(matched)}): "
-          + (", ".join(h for h, _ in matched) or "none"))
+    print(f"\nColumnas emparejadas con la página ({len(matched)}): "
+          + (", ".join(h for h, _ in matched) or "ninguna"))
     if unmatched_cols:
-        print(f"Columns NOT on the page (skipped): {', '.join(unmatched_cols)}")
+        print(f"Columnas que NO están en la página (se omiten): {', '.join(unmatched_cols)}")
     if not matched:
-        print("No Excel columns match this page. Are you on the right class/period?")
+        print("Ninguna columna del Excel coincide con esta página. "
+              "¿Estás en la clase/período correcto?")
         return
 
-    # --- Confirm before writing. ---
-    choice = _ask(f"\n[f]ill for real, [d]ry-run, or [c]ancel? "
-                  f"({len(parsed.students)} students × {len(matched)} columns) ").lower()
-    if choice in ("c", "cancel", ""):
-        print("Cancelled.")
+    # --- Confirmar antes de escribir. ---
+    choice = _ask(f"\n¿[f] llenar de verdad, [d] simulacro, o [c] cancelar? "
+                  f"({len(parsed.students)} estudiantes × {len(matched)} columnas) ").lower()
+    if choice in ("c", "cancel", "cancelar", ""):
+        print("Cancelado.")
         return
-    dry_run = choice in ("d", "dry", "dry-run")
+    dry_run = choice in ("d", "dry", "simulacro")
 
-    # --- Fill. ---
+    # --- Llenar. ---
     counts = {"SET": 0, "OK": 0, "skip": 0, "bad": 0, "FAIL": 0, "WARN": 0, "MISS": 0}
     problems: list[str] = []
     missing_students: list[str] = []
@@ -519,7 +559,7 @@ def do_excel(page) -> None:
                 continue
             if kind == "bad":
                 counts["bad"] += 1
-                problems.append(f"  BAD   {st.raw_name} / {header}: {payload}")
+                problems.append(f"  MALA  {st.raw_name} / {header}: {payload}")
                 continue
             value_str = excel_loader.format_grade(payload)
             tag, detail = set_grade(page, pkm, pka, value_str, dry_run)
@@ -527,20 +567,20 @@ def do_excel(page) -> None:
             if tag in ("FAIL", "WARN", "MISS"):
                 problems.append(f"  {tag:<4} {st.raw_name} / {header}: {detail}")
 
-    # --- Summary. ---
-    print("\n=== SUMMARY " + ("(DRY-RUN)" if dry_run else "(LIVE)") + " ===")
-    verb = "would set" if dry_run else "set"
-    print(f"  {verb}: {counts['OK'] + counts['SET']}   "
-          f"blank/skipped: {counts['skip']}   bad cells: {counts['bad']}   "
-          f"failed: {counts['FAIL']}   warnings: {counts['WARN']}")
+    # --- Resumen. ---
+    print("\n=== RESUMEN " + ("(SIMULACRO)" if dry_run else "(REAL)") + " ===")
+    verb = "se pondrían" if dry_run else "puestas"
+    print(f"  notas {verb}: {counts['OK'] + counts['SET']}   "
+          f"vacías/omitidas: {counts['skip']}   celdas malas: {counts['bad']}   "
+          f"fallidas: {counts['FAIL']}   advertencias: {counts['WARN']}")
     if missing_students:
-        print(f"  students in Excel not found on page ({len(missing_students)}): "
+        print(f"  estudiantes del Excel que no están en la página ({len(missing_students)}): "
               + ", ".join(missing_students))
     if problems:
-        print("  issues:")
+        print("  problemas:")
         print("\n".join(problems))
     if not dry_run:
-        print("\nDone. No 'Guardar' was clicked — review the values, then save manually.")
+        print("\nListo. NO se hizo clic en 'Guardar' — revisa los valores y guarda tú.")
 
 
 DIAG_TARGETS = [
@@ -577,21 +617,21 @@ def do_diag(page) -> None:
     except Exception:  # noqa: BLE001
         pw_ver = "unknown"
 
-    report("=== DIAGNOSTICS ===")
+    report("=== DIAGNÓSTICO ===")
     report(f"os: {_platform.platform()}")
     report(f"python: {sys.version.split()[0]}   playwright: {pw_ver}")
     try:
         b = page.context.browser
-        report(f"browser version: {b.version if b else 'unknown (persistent context)'}")
+        report(f"versión del navegador: {b.version if b else 'desconocida (contexto persistente)'}")
     except Exception as exc:  # noqa: BLE001
-        report(f"browser version: <error: {exc}>")
+        report(f"versión del navegador: <error: {exc}>")
     try:
         report(f"userAgent: {page.evaluate('navigator.userAgent')}")
         report(f"navigator.webdriver: {page.evaluate('navigator.webdriver')}")
     except Exception as exc:  # noqa: BLE001
-        report(f"JS eval FAILED on current tab: {type(exc).__name__}: {exc}")
-        report("  ^ if this fails, the tab/renderer itself is dead — nothing "
-               "network-related will work either.")
+        report(f"FALLÓ la ejecución de JS en la pestaña actual: {type(exc).__name__}: {exc}")
+        report("  ^ si esto falla, la pestaña/navegador está muerto — tampoco "
+               "funcionará nada de red.")
 
     failures: list[str] = []
     console_errors: list[str] = []
@@ -605,7 +645,7 @@ def do_diag(page) -> None:
 
     page.on("requestfailed", on_reqfail)
     page.on("console", on_console)
-    report("\nThis navigates the current tab through a few test pages (~1-2 min).")
+    report("\nEsto abre unas páginas de prueba en la pestaña actual (~1-2 min).")
 
     for i, (label, url) in enumerate(DIAG_TARGETS, 1):
         failures.clear()
@@ -616,39 +656,39 @@ def do_diag(page) -> None:
             resp = page.goto(url, timeout=20000, wait_until="load")
             dt = _time.time() - t0
             status = resp.status if resp else "?"
-            report(f"    loaded in {dt:.1f}s  status={status}  title={page.title()[:60]!r}")
+            report(f"    cargó en {dt:.1f}s  status={status}  título={page.title()[:60]!r}")
         except Exception as exc:  # noqa: BLE001
             dt = _time.time() - t0
             first = str(exc).splitlines()[0][:160]
-            report(f"    FAILED after {dt:.1f}s: {type(exc).__name__}: {first}")
+            report(f"    FALLÓ tras {dt:.1f}s: {type(exc).__name__}: {first}")
         page.wait_for_timeout(2500)  # let stragglers fail and get recorded
         for f in failures[:8]:
-            report(f"    net-fail: {f}")
+            report(f"    fallo-red: {f}")
         if len(failures) > 8:
-            report(f"    ... and {len(failures) - 8} more request failures")
+            report(f"    ... y {len(failures) - 8} fallos de red más")
         for c in console_errors[:5]:
-            report(f"    console-error: {c}")
+            report(f"    error-consola: {c}")
         try:
             page.screenshot(path=str(ARTIFACTS / f"diag_{i}.png"))
         except Exception as exc:  # noqa: BLE001
-            report(f"    screenshot failed: {type(exc).__name__}")
+            report(f"    falló la captura: {type(exc).__name__}")
 
     page.remove_listener("requestfailed", on_reqfail)
     page.remove_listener("console", on_console)
 
-    # Is this Chrome managed by an organization (school/enterprise policies)?
+    # ¿Este navegador está gestionado por una organización (políticas)?
     try:
         page.goto("chrome://policy", timeout=10000)
         page.wait_for_timeout(1500)
         page.screenshot(path=str(ARTIFACTS / "diag_policy.png"))
-        report("\nSaved chrome://policy screenshot (diag_policy.png) — shows "
-               "whether this browser is managed by an organization.")
+        report("\nGuardada captura de chrome://policy (diag_policy.png) — muestra "
+               "si el navegador está gestionado por una organización.")
     except Exception as exc:  # noqa: BLE001
-        report(f"\nchrome://policy not capturable: {type(exc).__name__}")
+        report(f"\nno se pudo capturar chrome://policy: {type(exc).__name__}")
 
     (ARTIFACTS / "diag_report.txt").write_text("\n".join(lines), encoding="utf-8")
-    report(f"\nReport saved to: {ARTIFACTS / 'diag_report.txt'}")
-    report("Send diag_report.txt and the diag_*.png screenshots for analysis.")
+    report(f"\nReporte guardado en: {ARTIFACTS / 'diag_report.txt'}")
+    report("Envía diag_report.txt y las capturas diag_*.png para analizarlo.")
 
 
 def do_record(page) -> None:
@@ -698,11 +738,11 @@ def do_record(page) -> None:
     for pg in ctx.pages:
         hook_page(pg)
 
-    print("\n=== RECORDING ===")
-    print("  Now go to the browser and reproduce the problem exactly as it")
-    print("  happens (e.g. open the login page, wait for the captcha that never")
-    print("  appears, click things that hang...). Take your time.")
-    input("  When done, come back here and press ENTER to stop recording... ")
+    print("\n=== GRABANDO ===")
+    print("  Ahora ve al navegador y reproduce el problema tal como pasa")
+    print("  (por ejemplo: abre el login, espera el captcha que no aparece,")
+    print("  haz clic en lo que se cuelga...). Tómate tu tiempo.")
+    input("  Cuando termines, vuelve aquí y presiona ENTER para detener... ")
 
     ctx.remove_listener("request", on_req)
     ctx.remove_listener("response", on_resp)
@@ -733,24 +773,30 @@ def do_record(page) -> None:
         lines.append(f"screenshot failed: {type(exc).__name__}")
 
     (ARTIFACTS / "record_report.txt").write_text("\n".join(lines), encoding="utf-8")
-    print(f"\nSaved {len(events)} events to {ARTIFACTS / 'record_report.txt'}")
-    print("Last 25 events:")
+    print(f"\nGuardados {len(events)} eventos en {ARTIFACTS / 'record_report.txt'}")
+    print("Últimos 25 eventos:")
     for line in events[-25:]:
         print("  " + line)
-    print("\nSend record_report.txt and record.png for analysis.")
+    print("\nEnvía record_report.txt y record.png para analizarlo.")
 
 
 SESSION_HELP = """
-Commands (run against the already-open page — no reboot):
-  excel    read grades from an Excel sheet and fill the page (Milestone 1)
-  dry      Milestone-0 test fill DRY-RUN: confirm the values, select nothing
-  fill     Milestone-0 test fill LIVE: set the hardcoded test grades
-  probe    click one target-column cell and dump the picker markup
-  inspect  dump full DOM + screenshot to ./artifacts/
-  diag     run connectivity diagnostics; saves a shareable report to ./artifacts/
-  record   record network/console activity WHILE you reproduce a problem by hand
-  help     show this help
-  quit     close the browser and exit
+Comandos:
+  excel    leer las notas de un Excel y llenar la página  (o solo presiona ENTER)
+  ayuda    mostrar esta ayuda
+  salir    cerrar y terminar
+"""
+
+# Comandos avanzados (ocultos del menú). 'diag' y 'record' sirvieron para
+# diagnosticar problemas del navegador; se mantienen por si hacen falta.
+ADVANCED_HELP = """
+Comandos avanzados (ocultos):
+  diag     diagnóstico de conexión; guarda un reporte en ./artifacts/
+  record   graba la actividad de red mientras reproduces un problema a mano
+  dry      prueba interna (simulacro) sobre una columna fija
+  fill     prueba interna (real) sobre una columna fija
+  probe    volcar el selector de notas a ./artifacts/
+  inspect  volcar el DOM + captura a ./artifacts/
 """
 
 
@@ -760,6 +806,7 @@ def run_session(page) -> None:
     print(SESSION_HELP)
     actions = {
         "excel": lambda: do_excel(page),
+        # avanzados / ocultos:
         "dry": lambda: do_fill(page, dry_run=True),
         "fill": lambda: do_fill(page, dry_run=False),
         "probe": lambda: do_probe(page),
@@ -769,17 +816,24 @@ def run_session(page) -> None:
     }
     while True:
         try:
-            cmd = input("\ngrade> ").strip().lower()
+            cmd = input("\nnotas> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             break
-        if cmd in ("quit", "q", "exit"):
+        if cmd in ("salir", "quit", "q", "exit"):
             break
-        if cmd in ("help", "h", "?", ""):
+        if cmd in ("ayuda", "help", "h", "?"):
             print(SESSION_HELP)
             continue
+        if cmd == "avanzado":
+            print(ADVANCED_HELP)
+            continue
+        # ENTER vacío = ejecutar 'excel' (lo único que usa el día a día).
+        if cmd == "":
+            cmd = "excel"
         action = actions.get(cmd)
         if not action:
-            print(f"Unknown command {cmd!r}. Type 'help'.")
+            print(f"Comando desconocido: {cmd!r}. Escribe 'ayuda' "
+                  "(o presiona ENTER para 'excel').")
             continue
         try:
             action()
@@ -843,16 +897,16 @@ def launch_context(p, browser: str, no_gpu: bool = False):
             ctx = p.chromium.launch_persistent_context(
                 channel=channel, **build_opts(udir)
             )
-            print(f"[browser] using installed {name}"
-                  + (" (GPU disabled)." if no_gpu else "."))
+            print(f"[navegador] usando {name} instalado"
+                  + (" (GPU desactivada)." if no_gpu else "."))
             return ctx
         except Exception as exc:  # noqa: BLE001 — browser not installed / not found
             if browser in ("chrome", "edge"):
                 raise
-            print(f"[browser] Google Chrome not available ({type(exc).__name__}); "
-                  "falling back to bundled Chromium.")
+            print(f"[navegador] Google Chrome no disponible ({type(exc).__name__}); "
+                  "usando el Chromium interno.")
     ctx = p.chromium.launch_persistent_context(**build_opts(USER_DATA_CHROMIUM))
-    print("[browser] using bundled Chromium" + (" (GPU disabled)." if no_gpu else "."))
+    print("[navegador] usando el Chromium interno" + (" (GPU desactivada)." if no_gpu else "."))
     return ctx
 
 
@@ -909,19 +963,19 @@ def main() -> int:
             try:
                 browser = p.chromium.connect_over_cdp(endpoint)
             except Exception as exc:  # noqa: BLE001
-                print(f"Could not attach to a browser on port {args.attach} "
+                print(f"No se pudo conectar a un navegador en el puerto {args.attach} "
                       f"({type(exc).__name__}).")
-                print("Start Edge with a debugging port first (PowerShell):\n")
+                print("Primero abre Edge con un puerto de depuración (en PowerShell):\n")
                 print('  Start-Process msedge -ArgumentList '
                       '"--remote-debugging-port=9222",'
                       '"--user-data-dir=$env:LOCALAPPDATA\\edge-grades"\n')
-                print("(or the same with 'chrome' instead of 'msedge'), "
-                      "then run this again with --attach.")
+                print("(o lo mismo con 'chrome' en vez de 'msedge'), "
+                      "y vuelve a ejecutar con --attach.")
                 return 1
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             context = None  # we did not launch it; never close the user's browser
-            print(f"[browser] attached to your running browser on port {args.attach}.")
+            print(f"[navegador] conectado a tu navegador en el puerto {args.attach}.")
         else:
             context = launch_context(p, args.browser, no_gpu=args.no_gpu)
             page = context.pages[0] if context.pages else context.new_page()
@@ -944,12 +998,12 @@ def main() -> int:
                     do_probe(page)
                 else:
                     do_fill(page, dry_run=args.dry_run)
-                input("\nDone. Press ENTER to close the browser... ")
+                input("\nListo. Presiona ENTER para cerrar el navegador... ")
         finally:
             if context is not None:
                 context.close()
             else:
-                print("Detached; your browser stays open.")
+                print("Desconectado; tu navegador queda abierto.")
 
     return 0
 

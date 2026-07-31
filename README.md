@@ -15,6 +15,29 @@ clicking. It reads the grades from your Excel file.
 
 ---
 
+## Uso diario (en español) — lo más fácil
+
+Ya instalado una vez (ver "Step 0/2" más abajo), el día a día es:
+
+1. **Doble clic en `INICIAR.bat`.** Eso solo: actualiza la herramienta, abre
+   Microsoft Edge (con su propio perfil, sin tocar tu Edge normal) y conecta.
+2. En la ventana de **Edge** que se abre: **inicia sesión** en la plataforma y
+   abre la **planilla de notas** (la clase y el período correctos).
+3. Vuelve a la ventana negra y presiona **ENTER**.
+4. Presiona **ENTER** otra vez (eso ejecuta `excel`) y sigue las preguntas en
+   español: elige el archivo, la hoja, ve a la planilla y elige **`d` (simulacro)**
+   primero para revisar, luego **`f`** para llenar de verdad.
+5. **Nada se guarda solo:** revisa las notas en la página y da **Guardar** tú.
+
+Recuerda el último archivo y hoja que usaste, así que la próxima vez es aún más
+rápido (basta con ENTER). Para salir, escribe `salir`.
+
+> Este equipo usa **Edge + attach** (tú abres Edge y la herramienta se conecta),
+> porque es lo único estable aquí: Chrome no arranca bajo automatización y Edge
+> lanzado por la herramienta colgaba el login. `INICIAR.bat` hace todo eso por ti.
+
+---
+
 ## What this is (context)
 
 - The grading platform has **no API** and **won't accept typed grades** — a human
@@ -333,12 +356,13 @@ python -m venv .venv
 
 ## Notes for whoever packaged this
 
-Ship only the source files. **Do not** include `.venv`, `user-data`, `artifacts`,
-`excels`, or `__pycache__` — those are machine-specific and are rebuilt on the
-target PC. The files needed are:
+Everything is distributed via the Git repo. The `.gitignore` already excludes the
+machine-specific bits (`.venv`, `user-data*`, `artifacts`, `excels`, `settings.json`,
+`__pycache__`). Tracked files:
 
 ```
-poc.py  excel_loader.py  requirements.txt  README.md  setup.ps1  run.ps1
+poc.py  excel_loader.py  requirements.txt  README.md  .gitignore
+setup.ps1  run.ps1  start-edge.ps1  INICIAR.bat
 ```
 
 Developed and tested on macOS; the setup/run scripts and this guide target
@@ -366,23 +390,33 @@ need to hand-hold each keystroke.
   (install Git first if missing: `winget install -e --id Git.Git`).
 Prefer the clone over the old zip precisely so `git pull` keeps them current.
 
+**This machine's working configuration (important).** On the owner's Windows 11
+PC, Chrome does **not** start under automation (exit 21) and an Edge *launched by*
+the tool hangs the login. The only stable path is **attach mode to an Edge the user
+starts themselves**. This is fully automated by the launcher — prefer it:
+- **`INICIAR.bat`** (double-click) or `start-edge.ps1` does everything: `git pull`
+  → opens Edge with `--remote-debugging-port=9222` (own profile) → runs
+  `poc.py --attach 9222`. Steer the user to this, not `run.ps1`.
+- The whole UI is now **in Spanish**; talk to them in Spanish.
+
 **Decision tree:**
 
-1. **Latest code:** clone or `git pull` as above.
+1. **Latest code:** clone or `git pull` (the launcher also does this).
 2. **Python present?** `python --version`. If missing:
    `winget install -e --id Python.Python.3.12`, then a **new** PowerShell window.
 3. **Setup (once per machine):** `powershell -ExecutionPolicy Bypass -File
-   .\setup.ps1` — creates `.venv`, installs packages, downloads Chromium (slow).
-   Prints `Setup complete.`
-4. **Run:** `powershell -ExecutionPolicy Bypass -File .\run.ps1`. A browser opens;
-   PowerShell shows a handoff prompt. It uses their installed Google Chrome when
-   present (look for `[browser] using installed Google Chrome.`).
-5. **The session (the user drives this; just steer):** they log in + open the grade
-   sheet → ENTER in PowerShell → at `grade>` type `excel` → pick the Excel (`f`
-   lists the `excels` folder by number; `p` = full path) → pick the sheet number →
-   navigate the browser to the matching class **and evaluation period** → ENTER →
-   choose **`d` (dry-run) first**, review the summary, then `excel` again with `f`.
+   .\setup.ps1`. Prints `Setup complete.`
+4. **Run (daily):** double-click **`INICIAR.bat`**. Edge opens; the user logs in and
+   opens the grade sheet there; then the tool's handoff prompt appears.
+5. **The session (mostly the user's job; just steer):** ENTER at the handoff → ENTER
+   again runs `excel` → pick Excel / sheet (it defaults to the **last used** — ENTER
+   accepts) → go to the matching class **and evaluation period** in Edge → ENTER →
+   **`d` (simulacro/dry-run) first**, review, then `excel` again + **`f`**.
 6. **Nothing saves** until they click **Guardar** themselves — by design.
+
+**Advanced/hidden commands** (not shown in the menu; type `avanzado` to list): the
+diagnostics `diag` and `record` are still there — they're what pinned down the
+Edge/attach solution — plus the internal `dry`/`fill`/`probe`/`inspect`.
 
 **Safety (non-negotiable):** never store or ask for their platform password (they
 log in by hand), and never click **Guardar** for them.
