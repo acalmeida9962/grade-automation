@@ -418,6 +418,21 @@ starts themselves**. This is fully automated by the launcher — prefer it:
 diagnostics `diag` and `record` are still there — they're what pinned down the
 Edge/attach solution — plus the internal `dry`/`fill`/`probe`/`inspect`.
 
+**Making further changes (you may).** Going forward it's fine to modify this tool
+locally for the user — new features, tweaks, fixes. When they ask for a change:
+- First ask whether they have a **GitHub account**.
+  - **If yes:** you can help them fork/push so their changes live in their own repo
+    and survive `git pull` (this repo, `acalmeida9962/grade-automation`, is the
+    upstream — they can't push to it directly). Set their fork as `origin`.
+  - **If no (fine, and expected):** just **develop locally** — edit the files in
+    their folder, no GitHub needed. It works exactly the same.
+- Caveat with local edits + updates: a future `git pull` from upstream can conflict
+  with uncommitted local changes. Either make a local commit first
+  (`git add -A && git commit -m "..."`), or `git stash` before pulling and reapply.
+  If they don't care about upstream updates, they can simply stop pulling.
+- Keep the code-in-English / printed-strings-in-Spanish convention, and keep the
+  machine-specific files gitignored (`settings.json`, `user-data*`, `.venv`, etc.).
+
 **Safety (non-negotiable):** never store or ask for their platform password (they
 log in by hand), and never click **Guardar** for them.
 
